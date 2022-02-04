@@ -36,3 +36,11 @@
     transform: rotate(360deg);
   }
 }
+
+body {
+  background-image: linear-gradient(to right, #FFF9FE, #FFF9FE);
+}
+
+h1 {
+  color:white;
+}
