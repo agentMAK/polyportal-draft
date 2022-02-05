@@ -4,7 +4,8 @@ import {Row, Button, Form, Col, Spinner} from 'react-bootstrap'
 import uni from './images/uni.png'
 import polygon from './images/polygon.svg'
 import { useState } from 'react'
-import Web3 from 'web3'
+import {ethers} from 'ethers'
+import { ChainId, TradeContext, UniswapPair, UniswapPairSettings } from 'simple-uniswap-sdk';
 
 
 
@@ -12,7 +13,9 @@ function App() {
   const bearerToken = 'SK-R7L3DVYC-XWF284ZA-RNQAD4XE-8AA3284Q'
   const [OrderReservation, setOrderReservation] = useState(false)
   const [orderId,setOrderId] = useState('')
-  const [orderStatus, setOrderStatus] = useState(false)
+  const [orderStatus, setOrderStatus] = useState('waiting')
+  const [approveStatus, setApproveStatus] = useState('inactive')
+  const [swapStatus, setSwapStatus] = useState('inactive')
   const [formState, setFormState] = useState({
       chooseAmount: true,
       chooseWalletAddress: false,
@@ -28,7 +31,7 @@ function App() {
   const [billingAddress, setBillingAddress] = useState({
     firstName:"John",
     lastName:"Doe",
-    street1:"975 Polygon Street",
+    street1:"877 Polygon Street",
     city:"London",
     state:"Greater London",
     postalCode:"09675",
@@ -47,6 +50,93 @@ function App() {
     card2fa:"000000"
 
   })
+  const [ethersConfig,setEthersConfig] = useState({
+    provider:"",
+    signer:"",
+    trade:""
+  })
+
+
+
+
+
+
+  const approveSwap = async () => {
+
+    const uniswapPair = new UniswapPair({
+      // the contract address of the token you want to convert FROM
+      fromTokenContractAddress: '0xeb8f08a975ab53e34d8a0330e0d34de942c95926',
+      // the contract address of the token you want to convert TO
+      toTokenContractAddress: '0x01be23585060835e02b77ef475b0cc51aa1e0709',
+      // the ethereum address of the user using this part of the dApp
+      ethereumAddress: '0xA6b9ca60f8f203Cf95C08F48b1A10415d1428BbF',
+      // you can pass in the provider url as well if you want
+      providerUrl: "https://eth-rinkeby.alchemyapi.io/v2/uJtp7jXfk1873L-3XsfmrR9DIKnRzeP7",
+      // OR if you want to inject your own ethereum provider (no need for chainId if so)
+      // ethereumProvider: YOUR_WEB3_ETHERS_OR_CUSTOM_ETHEREUM_PROVIDER,
+      chainId: ChainId.RINKEBY,
+      settings: new UniswapPairSettings({
+        gasSettings: {
+          getGasPrice: async () => {
+            return 'GWEI_GAS_PRICE';
+          },
+        },
+      })
+    });
+    const uniswapPairFactory = await uniswapPair.createFactory();
+    const trade = await uniswapPairFactory.trade(amount);
+
+    if (!trade.fromBalance.hasEnough) {
+      throw new Error('You do not have enough from balance to execute this swap');
+    }
+
+    // subscribe to quote changes this is just in example so your dont miss it
+    trade.quoteChanged$.subscribe((value: TradeContext) => {
+      // value will hold the same info as below but obviously with
+      // the new trade info.
+    });
+
+
+    const provider = new ethers.providers.Web3Provider(window.ethereum)
+    provider.send("eth_requestAccounts", []);
+    const signer = provider.getSigner()
+    console.log(signer)
+
+    setEthersConfig({
+      provider:provider,
+      signer:signer,
+      trade: trade
+    })
+
+
+    if (trade.approvalTransaction) {
+      const approved = await signer.sendTransaction(trade.approvalTransaction);
+      console.log('approved txHash', approved.hash);
+      setApproveStatus('waiting')
+      const approvedReceipt = await approved.wait();
+      console.log('approved receipt', approvedReceipt);
+      setApproveStatus('disabled')
+      setSwapStatus('active')
+    } else {setSwapStatus('active')}
+  };
+
+  const sendTransaction = async () => {
+    const tradeTransaction = await ethersConfig.signer.sendTransaction(ethersConfig.trade.transaction);
+    console.log('trade txHash', tradeTransaction.hash);
+    setSwapStatus('waiting')
+    const tradeReceipt = await tradeTransaction.wait();
+    console.log('trade receipt', tradeReceipt);
+    setSwapStatus('disabled')
+     // once done with trade aka they have sent it and you don't need it anymore call
+    ethersConfig.trade.destroy();
+  }
+
+
+
+
+
+
+
 
   async function getWalletOrder() {
 
@@ -80,7 +170,7 @@ function App() {
         reservationId: OrderReservation,
         amount:amount,
         sourceCurrency:"USD",
-        destCurrency:token,
+        destCurrency:"MUSDC",
         dest:`matic:${walletAddress}`,
         givenName:billingAddress.firstName,
         familyName:billingAddress.lastName,
@@ -158,14 +248,12 @@ function App() {
     fetch(`https://api.testwyre.com/v3/orders/${orderId}`, options)
       .then(response => response.json())
       .then(response => {
-        console.log(response.status)
-        if(response.status === 'COMPLETE')
-          setOrderStatus(true);
-        else
-          setOrderStatus(false);
+        if(response.status === 'COMPLETE') {
+          setOrderStatus('disabled');
+        }else
+          setOrderStatus('waiting');
       })
       .catch(err => console.error(err));
-
   }
 
   const chooseBillingAddressOnChange = (event) => {
@@ -261,6 +349,38 @@ function App() {
     }
 
     setToken(tokenAddress[event.target.value])
+  }
+
+  const statusButton = (text: String,status: String,onClick: function) => {
+    let button
+    if(text === 'Approve' && orderStatus === 'disabled' && approveStatus === 'inactive') {
+      setApproveStatus('active')
+    }
+    if(status === 'inactive') {
+      button = <Button variant="primary"  size="lg" disabled>
+                  {''} {text}
+                </Button>
+      }
+      else if(status === 'waiting') {
+        button = <Button variant="primary"  size="lg">
+                  <Spinner
+                    as="span"
+                    animation="border"
+                    size="sm"
+                    role="status"
+                    aria-hidden="true"/>
+                    {''} {text}
+                </Button>
+      }else if(status === 'disabled'){
+        button = <Button variant="secondary"  size="lg" disabled>
+                  {''} {text}
+                </Button>
+      }else if(status === 'active') {
+        button = <Button variant="primary"  size="lg" onClick={onClick}>
+                    {''} {text}
+                </Button>
+      }
+      return button
   }
 
   const chooseAmount = () => {
@@ -422,46 +542,15 @@ function App() {
           <img  className="polygon" src={polygon} alt="Polygon"></img>
           <FinaliseButton>
             <div className="d-grid gap-2">
-            {!orderStatus
-                ? <Button variant="primary"  size="lg">
-                    <Spinner
-                      as="span"
-                      animation="border"
-                      size="sm"
-                      role="status"
-                      aria-hidden="true"/>
-                      {''} Depositing to Wallet
-                  </Button>
-                :<Button variant="secondary"  size="lg" disabled>
-                  {''} Depositing to Wallet
-                  </Button>
-              }
+            {statusButton('Depositing to Wallet',orderStatus, null)}
               </div>
               <br />
             <div className="d-grid gap-2">
-              <Button variant="primary"  size="lg" onClick={getWalletOrderProgress}>
-              {/* <Spinner
-                as="span"
-                animation="border"
-                size="sm"
-                role="status"
-                aria-hidden="true"
-              /> */}
-              {''} Approve
-              </Button>
+              {statusButton('Approve',approveStatus,approveSwap)}
             </div>
             <br />
             <div className="d-grid gap-2">
-              <Button variant="primary"  size="lg">
-                {/* <Spinner
-                as="span"
-                animation="border"
-                size="sm"
-                role="status"
-                aria-hidden="true"
-              /> */}
-                {''} Swap for UNI
-              </Button>
+            {statusButton('Swap for LINK',swapStatus,sendTransaction)}
             </div>
           </FinaliseButton>
       </LoadingWrapper>
